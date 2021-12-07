@@ -73,6 +73,31 @@ class GoTrueApi {
             }
         }
     }
+    
+    func signInWithApple(idToken: String, nonce: String?, completion: @escaping (Result<Session, Error>) -> Void) {
+        guard let url = URL(string: "\(url)/token?grant_type=id_token") else {
+            completion(.failure(GoTrueError(message: "badURL")))
+            return
+        }
+        
+        fetch(url: url, method: .post, parameters: [
+            "id_token": idToken,
+            "nonce": nonce ?? "",
+            "provider": "apple"
+        ]) { result in
+            switch result {
+            case let .success(response):
+                print(response as! [String: Any])
+                guard let dict: [String: Any] = response as? [String: Any], let session = Session(from: dict) else {
+                    completion(.failure(GoTrueError(message: "failed to parse response")))
+                    return
+                }
+                completion(.success(session))
+            case let .failure(error):
+                completion(.failure(error))
+            }
+        }
+    }
 
     func sendMagicLinkEmail(email: String, completion: @escaping (Result<Any?, Error>) -> Void) {
         guard let url = URL(string: "\(url)/magiclink") else {

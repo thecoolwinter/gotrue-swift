@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(AuthenticationServices)
+import AuthenticationServices
+#endif
 
 public typealias AuthStateChangeCallback = (_ event: AuthChangeEvent, _ session: Session?) -> Void
 
@@ -124,6 +127,59 @@ public class GoTrueClient {
             completion(.failure(error))
         }
     }
+    
+    #if canImport(AuthenticationServices)
+    /// Creates a sign in with Apple authorization request with a secure, random, nonce and optional scopes.
+    /// - Parameter scopes: Scopes to request from the user during authorization.
+    /// - Returns: An `ASAuthorizationAppleIDRequest` with good default values and a random nonce for security.
+    @available(macOS 10.15, iOS 13.0, *)
+    func generateSignInWithAppleRequest(scopes: [ASAuthorization.Scope]? = [.fullName, .email]) -> ASAuthorizationAppleIDRequest {
+        let appleIDProvider = ASAuthorizationAppleIDProvider()
+        let request = appleIDProvider.createRequest()
+        request.requestedScopes = scopes
+        request.nonce = GoTrueClient.randomNonceString()
+        return request
+    }
+    
+    /// Sends the given authorization object to Supabase to sign in the user using GoTrue.
+    /// - Parameter authorization: The ASAuthorization object returned from:
+    ///     `ASAuthorizationControllerDelegate.authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization)`
+    @available(macOS 10.15, iOS 13.0, *)
+    public func signInWithApple(authorization: ASAuthorization, request: ASAuthorizationAppleIDRequest, completion: @escaping (Result<Session, Error>) -> Void) {
+        signInWithApple(authorization: authorization, nonce: request.nonce, completion: completion)
+    }
+    
+    /// Sends the given nonce and authorization to Supabase to sign in the user using GoTrue.
+    /// - Parameter authorization: The ASAuthorization object returned from:
+    ///     `ASAuthorizationControllerDelegate.authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization)`
+    @available(macOS 10.15, iOS 13.0, *)
+    public func signInWithApple(authorization: ASAuthorization, nonce: String?, completion: @escaping (Result<Session, Error>) -> Void) {
+        if let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
+            guard let appleIDToken = appleIDCredential.identityToken else {
+                print("Unable to fetch identity token")
+                return
+            }
+            
+            guard let idTokenString = String(data: appleIDToken, encoding: .utf8) else {
+                print("Unable to serialize token string from data: \(appleIDToken.debugDescription)")
+                return
+            }
+            
+            api.signInWithApple(idToken: idTokenString, nonce: nonce) { result in
+                switch result {
+                case .success(let session):
+                    self.saveSession(session: session)
+                    self.notifyAllStateChangeListeners(.signedIn)
+                    completion(.success(session))
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+        } else {
+            completion(.failure(GoTrueError(message: "Invalid Credentials Received: \(type(of: authorization))")))
+        }
+    }
+    #endif
 
     public func update(emailChangeToken: String? = nil, password: String? = nil, data: [String: Any]? = nil, completion: @escaping (Result<User, Error>) -> Void) {
         guard let accessToken = currentSession?.accessToken else {
@@ -334,3 +390,45 @@ extension GoTrueClient {
     }
 }
 #endif
+
+extension GoTrueClient {
+    /// Generates a random nonce string for use when authenticating using Sign In With Apple.
+    ///
+    /// Adapted from https://auth0.com/docs/api-auth/tutorials/nonce#generate-a-cryptographically-random-nonce
+    ///
+    /// - Parameter length: How long the string should be.
+    /// - Returns: A randomly generated string.
+    public static func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+        let charset: [Character] =
+        Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remainingLength = length
+        
+        while remainingLength > 0 {
+            let randoms: [UInt8] = (0 ..< 16).map { _ in
+                var random: UInt8 = 0
+                let errorCode = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+                if errorCode != errSecSuccess {
+                    fatalError(
+                        "Unable to generate nonce. SecRandomCopyBytes failed with OSStatus \(errorCode)"
+                    )
+                }
+                return random
+            }
+            
+            randoms.forEach { random in
+                if remainingLength == 0 {
+                    return
+                }
+                
+                if random < charset.count {
+                    result.append(charset[Int(random)])
+                    remainingLength -= 1
+                }
+            }
+        }
+        
+        return result
+    }
+}
